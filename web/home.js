@@ -1714,7 +1714,8 @@
       setTimeout(function () {
         setClass(back, 'on', true);
         setClass(front, 'on', false);
-        back.style.webkitTransform = back.style.transform = 'scale(1.08) translateX(-1.5%)';
+        // My Photos come fitted to the screen (webos/photo_fit.swift): the slow zoom would trim their edges.
+        if (pick) back.style.webkitTransform = back.style.transform = 'scale(1.08) translateX(-1.5%)';
         front = back;
       }, 60);
     }

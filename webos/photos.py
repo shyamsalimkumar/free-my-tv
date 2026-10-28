@@ -6,7 +6,8 @@
     python3 webos/photos.py <TV IP> --clear
 
 Each time, the album sent replaces the one on the TV; --clear takes them off (the picks come back). Up to 60 photos
-(the album's first; videos are left out), made 1920 pixels wide. Home Settings > My Photos turns them off and on.
+(the album's first; videos are left out), fitted to the TV's screen (webos/photo_fit.swift). Home Settings >
+My Photos turns them off and on.
 macOS only (it asks the Photos app); the first time, macOS asks to allow controlling Photos. Install Free My TV first
 (webos/install.py): this uses its key.
 """
@@ -58,18 +59,15 @@ def export(album, folder):
         sys.exit('Photos couldn\'t export the album: ' + why)
 
 
-def shrink(folder, into):
-    """The album's photos (not its videos) as JPEGs at most 1920 pixels wide, named 001.jpg on: their names."""
-    names = []
-    for source in sorted(os.listdir(folder)):
-        if not re.search(r'\.(jpe?g|heic|png|tiff?)$', source, re.I):
-            continue
-        name = '%03d.jpg' % (len(names) + 1)
-        made = subprocess.run(['sips', '-Z', '1920', '-s', 'format', 'jpeg', '-s', 'formatOptions', '80',
-                               os.path.join(folder, source), '--out', os.path.join(into, name)], capture_output=True)
-        if made.returncode == 0:
-            names.append(name)
-    return names
+def fit(folder, into):
+    """The album's photos (not its videos) fitted to the TV's 1920 x 1080, named 001.jpg on: their names."""
+    photos = [os.path.join(folder, n) for n in sorted(os.listdir(folder))
+              if re.search(r'\.(jpe?g|heic|png|tiff?)$', n, re.I)]
+    if not photos:
+        return []
+    fitter = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'photo_fit.swift')
+    made = subprocess.run(['swift', fitter, into] + photos, capture_output=True, text=True)
+    return made.stdout.split()
 
 
 def send(ip, into, names):
@@ -107,7 +105,8 @@ def main():
         os.mkdir(exported)
         print('Getting "%s" from Photos (photos in iCloud may take a while to download) ...' % album)
         export(album, exported)
-        names = shrink(exported, into)
+        print('Fitting them to the TV ...')
+        names = fit(exported, into)
         if not names:
             sys.exit('The album has no photos (videos are left out).')
         print('Sending %d photos to the TV ...' % len(names))
