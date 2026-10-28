@@ -4,6 +4,12 @@
     python3 webos/photos.py <TV IP> Favorites
     python3 webos/photos.py <TV IP> "Summer 2026"
     python3 webos/photos.py <TV IP> --clear
+    python3 webos/photos.py <TV IP> Favorites --auto
+
+--auto is for a schedule (launchd, every few hours): once a week it looks at the album, and when its newest photos
+changed, it makes the new set and keeps it on the Mac (~/.freemytv/photos) until the TV has taken it: it tries again
+while the TV is off, never opens the app on the TV (it takes them when it opens), and sends again if the TV restarted
+before that.
 
 Each time, the album sent replaces the one on the TV; --clear takes them off (the picks come back). Up to 60 photos,
 the newest first (videos, repeats and near copies are left out, and listed), fitted to the TV's screen
@@ -13,10 +19,13 @@ macOS only (it asks the Photos app); the first time, macOS asks to allow control
 """
 import os
 import re
+import shutil
+import socket
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from install import APP_ID, fetch_key, luna, ssh   # noqa: E402
@@ -24,6 +33,7 @@ from install import APP_ID, fetch_key, luna, ssh   # noqa: E402
 DIR = '/tmp/freemytv-photos/'   # where the app's service takes them from (webos/service)
 MOST = 60
 EXPORTED = 100   # more than MOST, so the repeats left out leave room for others
+WEEK = 7 * 24 * 3600   # how often --auto looks at the album
 
 # Every photo in the album, a line each: the day it was taken (yyyymmdd), the second of that day, and its id. Photos
 # lists an album oldest first and can't sort, so the newest are picked from this. (Seconds since 1970 overflow
@@ -89,12 +99,16 @@ def photos_app(script, args):
     return out.stdout
 
 
-def export(album, folder):
-    """The album's newest EXPORTED photos, each in its own folder (000, 001...), the newest first."""
+def newest(album):
+    """The ids of the album's newest EXPORTED photos, the newest first."""
     listed = [line.split('\t') for line in photos_app(LIST, [album]).splitlines() if line.count('\t') == 2]
-    newest = sorted(listed, key=lambda x: (int(x[0]), int(float(x[1]))), reverse=True)[:EXPORTED]
+    return [x[2] for x in sorted(listed, key=lambda x: (int(x[0]), int(float(x[1]))), reverse=True)[:EXPORTED]]
+
+
+def export(ids, folder):
+    """Each photo in its own folder (000, 001...), in the order given."""
     args = []
-    for i, (_, _, photo) in enumerate(newest):
+    for i, photo in enumerate(ids):
         os.mkdir(os.path.join(folder, '%03d' % i))
         args += [os.path.join(folder, '%03d' % i), photo]
     if args:
@@ -122,7 +136,9 @@ def fit(folder, into):
     return names
 
 
-def send(ip, into, names):
+def send(ip, into, names, open_app=True):
+    """Puts the photos where the app's service takes them; open_app brings the app up to take them now (otherwise it
+    takes them the next time it opens, or within 30 seconds while it's open)."""
     key = fetch_key(ip)
     with open(os.path.join(into, 'set.txt'), 'w') as f:
         f.write('\n'.join(names))
@@ -134,35 +150,132 @@ def send(ip, into, names):
         command = 'rm -rf {0} && mkdir -p {0} && chmod 777 {0} && tar -xf - -C {0} && chmod 666 {0}*'.format(DIR)
         if ssh(ip, key, command, stdin=bundle).returncode != 0:
             sys.exit("Couldn't reach the TV. Is it on, and Developer Mode still on?")
-    luna(ip, key, 'luna://com.webos.applicationManager/launch', {'id': APP_ID})
+    if open_app:
+        luna(ip, key, 'luna://com.webos.applicationManager/launch', {'id': APP_ID})
+
+
+def make(album, ids, into):
+    """The album's photos (ids, the newest first) exported and fitted into `into`: their names."""
+    with tempfile.TemporaryDirectory() as exported:
+        print('Getting %d photos of "%s" from Photos (photos in iCloud may take a while to download) ...'
+              % (len(ids), album))
+        export(ids, exported)
+        print('Fitting them to the TV ...')
+        return fit(exported, into)
+
+
+# MARK: - --auto: run by launchd every few hours. The album is looked at once a week, and a new set waits on the Mac
+# until the TV has taken it.
+
+def state_dir(album):
+    path = os.path.join(os.path.expanduser('~'), '.freemytv', 'photos', re.sub(r'[^\w.-]+', '_', album))
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def read(path):
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def write(path, text):
+    with open(path, 'w') as f:
+        f.write(text)
+
+
+def reachable(ip):
+    try:
+        socket.create_connection((ip, 9922), timeout=3).close()
+        return True
+    except OSError:
+        return False
+
+
+def on_tv(ip):
+    """'waiting' (sent, the app hasn't taken it yet), 'taken', or 'none' (never sent, or lost: /tmp empties at a
+    restart)."""
+    command = 'if [ -f {0}set.txt ]; then echo waiting; elif [ -d {0} ]; then echo taken; else echo none; fi'
+    return (ssh(ip, fetch_key(ip), command.format(DIR)).stdout or '').strip()
+
+
+def deliver(ip, album, pending):
+    """Sends the set waiting on the Mac, quietly, until the TV has taken it."""
+    if not reachable(ip):
+        print('The TV is off: trying again later.')
+        return
+    sent = os.path.join(pending, 'sent')   # what's on the TV is this set (not another one sent by hand)
+    tv = on_tv(ip) if os.path.exists(sent) else 'none'
+    if tv == 'taken':
+        os.replace(os.path.join(pending, 'ids.txt'), os.path.join(state_dir(album), 'sent.txt'))
+        shutil.rmtree(pending)
+        print('The TV took the new photos.')
+    elif tv == 'waiting':
+        print('On the TV: Free My TV takes them when it opens.')
+    else:
+        names = (read(os.path.join(pending, 'set.txt')) or '').split()
+        send(ip, pending, names, open_app=False)
+        write(sent, '')
+        print('Sent %d photos: Free My TV takes them when it opens (within 30 seconds if it is open).' % len(names))
+
+
+def auto(ip, album):
+    state = state_dir(album)
+    pending = os.path.join(state, 'pending')
+    print(time.strftime('%Y-%m-%d %H:%M'), end=': ')
+    if os.path.isdir(pending):
+        deliver(ip, album, pending)
+        return
+    checked = os.path.join(state, 'checked')
+    if os.path.exists(checked) and time.time() - os.path.getmtime(checked) < WEEK:
+        print('Looked at "%s" less than a week ago.' % album)
+        return
+    was_open = subprocess.run(['pgrep', '-xq', 'Photos']).returncode == 0
+    try:
+        ids = newest(album)
+        write(checked, '')
+        if '\n'.join(ids) == read(os.path.join(state, 'sent.txt')):
+            print('"%s" hasn\'t changed.' % album)
+            return
+        os.mkdir(pending)
+        names = make(album, ids, pending)
+    finally:
+        if not was_open:   # it opened only for this
+            subprocess.run(['osascript', '-e', 'tell application "Photos" to quit'], capture_output=True)
+    write(os.path.join(pending, 'set.txt'), '\n'.join(names))
+    write(os.path.join(pending, 'ids.txt'), '\n'.join(ids))
+    deliver(ip, album, pending)
 
 
 def main():
     args = sys.argv[1:]
-    if len(args) != 2 or not re.match(r'^\d{1,3}(\.\d{1,3}){3}$', args[0]):
+    if len(args) not in (2, 3) or not re.match(r'^\d{1,3}(\.\d{1,3}){3}$', args[0]):
         sys.exit(__doc__)
-    ip, album = args
-    with tempfile.TemporaryDirectory() as work:
-        into = os.path.join(work, 'tv')
-        os.mkdir(into)
+    ip, album = args[:2]
+    if len(args) == 3 and args[2] != '--auto' or album.startswith('--') and album != '--clear':
+        sys.exit(__doc__)
+    if album != '--clear' and sys.platform != 'darwin':
+        sys.exit('This takes the album from the Photos app, so it runs on a Mac.')
+    if len(args) == 3:
+        auto(ip, album)
+        return
+    with tempfile.TemporaryDirectory() as into:
         if album == '--clear':
             send(ip, into, [])
             print('Sent. The TV takes your photos off its screensaver now.')
             return
-        if album.startswith('--'):
-            sys.exit(__doc__)
-        if sys.platform != 'darwin':
-            sys.exit('This takes the album from the Photos app, so it runs on a Mac.')
-        exported = os.path.join(work, 'photos')
-        os.mkdir(exported)
-        print('Getting "%s" from Photos (photos in iCloud may take a while to download) ...' % album)
-        export(album, exported)
-        print('Fitting them to the TV ...')
-        names = fit(exported, into)
+        ids = newest(album)
+        names = make(album, ids, into)
         if not names:
             sys.exit('The album has no photos (videos are left out).')
         print('Sending %d photos to the TV ...' % len(names))
         send(ip, into, names)
+        # --auto needn't send these again, and a set it had waiting is older.
+        state = state_dir(album)
+        write(os.path.join(state, 'sent.txt'), '\n'.join(ids))
+        shutil.rmtree(os.path.join(state, 'pending'), ignore_errors=True)
         print('Sent. The TV shows how far it got; then they are on its screensaver.')
 
 

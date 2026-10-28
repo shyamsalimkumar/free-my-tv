@@ -1876,6 +1876,7 @@
     checkNight();
     Data.refresh();
     checkNote();
+    checkPhotos();   // photos.py --auto sends without opening the app
     if (!saverOn && !sheetOpen() && Date.now() - idleAt > SAVER_AFTER) showSaver();
     if (saverOn) tickSaverClock($('saver').querySelector('.clock'));
   }, 30000);
