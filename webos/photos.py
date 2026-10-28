@@ -8,10 +8,10 @@
 
 --auto is for a schedule (launchd, every few hours): once a week it looks at the album, and when its newest photos
 changed, it makes the new set and keeps it on the Mac (~/.freemytv/photos) until the TV has taken it: it tries again
-while the TV is off, never opens the app on the TV (it takes them when it opens), and sends again if the TV restarted
-before that.
+while the TV is off, and sends again if the TV restarted before the app took them.
 
-Each time, the album sent replaces the one on the TV; --clear takes them off (the picks come back). Up to 60 photos,
+Each time, the album sent replaces the one on the TV, without opening the app (Free My TV takes them within 30
+seconds while it's open, or when it opens); --clear takes them off (the picks come back). Up to 60 photos,
 the newest first (videos, repeats and near copies are left out, and listed), fitted to the TV's screen
 (webos/photo_fit.swift). Home Settings > My Photos turns them off and on.
 macOS only (it asks the Photos app); the first time, macOS asks to allow controlling Photos. Install Free My TV first
@@ -28,7 +28,7 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from install import APP_ID, fetch_key, luna, ssh   # noqa: E402
+from install import fetch_key, ssh   # noqa: E402
 
 DIR = '/tmp/freemytv-photos/'   # where the app's service takes them from (webos/service)
 MOST = 60
@@ -136,9 +136,9 @@ def fit(folder, into):
     return names
 
 
-def send(ip, into, names, open_app=True):
-    """Puts the photos where the app's service takes them; open_app brings the app up to take them now (otherwise it
-    takes them the next time it opens, or within 30 seconds while it's open)."""
+def send(ip, into, names):
+    """Puts the photos where the app's service takes them: within 30 seconds while it's open, or when it opens next.
+    It isn't opened for them: that would close the screensaver, or whatever the TV is showing."""
     key = fetch_key(ip)
     with open(os.path.join(into, 'set.txt'), 'w') as f:
         f.write('\n'.join(names))
@@ -150,8 +150,6 @@ def send(ip, into, names, open_app=True):
         command = 'rm -rf {0} && mkdir -p {0} && chmod 777 {0} && tar -xf - -C {0} && chmod 666 {0}*'.format(DIR)
         if ssh(ip, key, command, stdin=bundle).returncode != 0:
             sys.exit("Couldn't reach the TV. Is it on, and Developer Mode still on?")
-    if open_app:
-        luna(ip, key, 'luna://com.webos.applicationManager/launch', {'id': APP_ID})
 
 
 def make(album, ids, into):
@@ -216,7 +214,7 @@ def deliver(ip, album, pending):
         print('On the TV: Free My TV takes them when it opens.')
     else:
         names = (read(os.path.join(pending, 'set.txt')) or '').split()
-        send(ip, pending, names, open_app=False)
+        send(ip, pending, names)
         write(sent, '')
         print('Sent %d photos: Free My TV takes them when it opens (within 30 seconds if it is open).' % len(names))
 
@@ -264,7 +262,8 @@ def main():
     with tempfile.TemporaryDirectory() as into:
         if album == '--clear':
             send(ip, into, [])
-            print('Sent. The TV takes your photos off its screensaver now.')
+            print('Sent. Free My TV takes your photos off the screensaver within 30 seconds if it is open, '
+                  'or when it opens.')
             return
         ids = newest(album)
         names = make(album, ids, into)
@@ -276,7 +275,8 @@ def main():
         state = state_dir(album)
         write(os.path.join(state, 'sent.txt'), '\n'.join(ids))
         shutil.rmtree(os.path.join(state, 'pending'), ignore_errors=True)
-        print('Sent. The TV shows how far it got; then they are on its screensaver.')
+        print('Sent. Free My TV takes them within 30 seconds if it is open, or when it opens: '
+              'the old ones show until then.')
 
 
 if __name__ == '__main__':

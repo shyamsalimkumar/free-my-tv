@@ -1625,36 +1625,40 @@
     });
   }
 
-  /** A set sent from the computer replaces the one kept (an empty one removes them). */
+  /**
+   * A set sent from the computer replaces the one kept (an empty one removes them). The new photos go in under keys of
+   * their own while the old ones keep showing, and the old go once all are in; over the screensaver it says nothing.
+   */
   function checkPhotos() {
     if (gettingPhotos) return;
     TV.sentPhotos(function (names) {
       if (!names) return;
       gettingPhotos = true;
-      setPhotoNames([]);
-      photoStore('readwrite', function (store) {
-        if (store) store.clear();
-        var got = [];
-        (function next(i) {
-          if (i >= names.length) {
-            gettingPhotos = false;
-            setPhotoNames(got);
-            toast(names.length ? plural('plural|one:{n} photo for the screensaver|other:{n} photos for the screensaver', got.length)
-              : tr('Your photos are off the screensaver.'));
-            return;
-          }
-          toast(trf('Getting your photos: {n} of {total}', {n: i + 1, total: names.length}));
-          TV.sentPhoto(names[i], function (data) {
-            if (!data) { next(i + 1); return; }
-            photoStore('readwrite', function (st2) {
-              if (!st2) { next(i + 1); return; }
-              var put = st2.put('data:image/jpeg;base64,' + data, names[i]);
-              put.onsuccess = function () { got.push(names[i]); next(i + 1); };
-              put.onerror = function () { next(i + 1); };   // the TV's storage is full: the ones that fit stay
-            });
+      var set = Date.now().toString(36) + '-', got = [];
+      function say(text) { if (!saverOn) toast(text); }
+      (function next(i) {
+        if (i >= names.length) {
+          var old = myPhotos;
+          setPhotoNames(got);
+          photoStore('readwrite', function (store) {
+            for (var k = 0; store && k < old.length; k++) store['delete'](old[k]);   // delete: a keyword in ES3
           });
-        })(0);
-      });
+          gettingPhotos = false;
+          say(names.length ? plural('plural|one:{n} photo for the screensaver|other:{n} photos for the screensaver', got.length)
+            : tr('Your photos are off the screensaver.'));
+          return;
+        }
+        say(trf('Getting your photos: {n} of {total}', {n: i + 1, total: names.length}));
+        TV.sentPhoto(names[i], function (data) {
+          if (!data) { next(i + 1); return; }
+          photoStore('readwrite', function (store) {
+            if (!store) { next(i + 1); return; }
+            var put = store.put('data:image/jpeg;base64,' + data, set + names[i]);
+            put.onsuccess = function () { got.push(set + names[i]); next(i + 1); };
+            put.onerror = function () { next(i + 1); };   // the TV's storage is full: the ones that fit stay
+          });
+        });
+      })(0);
     });
   }
 
@@ -1680,7 +1684,6 @@
   }
 
   function showSaver() {
-    var photos = saverPhotos();
     saverOn = true;
     saverPick = null;
     var s = $('saver');
@@ -1695,6 +1698,7 @@
     var front = a;
     function next() {
       if (!saverOn) return;
+      var photos = saverPhotos();   // again each time: a new set may have come in meanwhile
       var p = photos.length ? photos[saverIndex++ % photos.length] : null;
       if (p && p.mine) loadPhoto(p.mine, function (url) { if (url && saverOn) show(url, null); });
       else if (p) show(Data.image(p.backdrop, 'original'), p);
