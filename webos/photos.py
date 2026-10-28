@@ -61,10 +61,15 @@ end run
 # newest first. `using originals` off: JPEG, HEIC turned into JPEG.
 EXPORT = '''
 on run argv
+  set destinations to {}
+  set ids to {}
+  repeat with i from 1 to (count of argv) by 2
+    set end of destinations to (POSIX file (item i of argv)) as alias   -- here: inside the tell, Photos can't
+    set end of ids to item (i + 1) of argv
+  end repeat
   tell application "Photos"
-    repeat with i from 1 to (count of argv) by 2
-      set destination to POSIX file (item i of argv)
-      export {media item id (item (i + 1) of argv)} to (destination as alias) without using originals
+    repeat with i from 1 to count of ids
+      export {media item id (item i of ids)} to (item i of destinations) without using originals
     end repeat
   end tell
 end run
