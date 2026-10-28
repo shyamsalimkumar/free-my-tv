@@ -5,8 +5,8 @@
     python3 webos/photos.py <TV IP> "Summer 2026"
     python3 webos/photos.py <TV IP> --clear
 
-Each time, the album sent replaces the one on the TV; --clear takes them off (the picks come back). Up to 60 photos
-(the album's first; videos, repeats and near copies are left out, and listed), fitted to the TV's screen
+Each time, the album sent replaces the one on the TV; --clear takes them off (the picks come back). Up to 60 photos,
+the newest first (videos, repeats and near copies are left out, and listed), fitted to the TV's screen
 (webos/photo_fit.swift). Home Settings > My Photos turns them off and on.
 macOS only (it asks the Photos app); the first time, macOS asks to allow controlling Photos. Install Free My TV first
 (webos/install.py): this uses its key.
@@ -25,12 +25,12 @@ DIR = '/tmp/freemytv-photos/'   # where the app's service takes them from (webos
 MOST = 60
 EXPORTED = 100   # more than MOST, so the repeats left out leave room for others
 
-# Exports the album's first photos (`using originals` off: JPEG, HEIC turned into JPEG) into a folder.
-EXPORT = '''
+# Every photo in the album, a line each: the day it was taken (yyyymmdd), the second of that day, and its id. Photos
+# lists an album oldest first and can't sort, so the newest are picked from this. (Seconds since 1970 overflow
+# AppleScript's integers.)
+LIST = '''
 on run argv
-  set destination to POSIX file (item 1 of argv)
-  set wanted to item 2 of argv
-  set limit to (item 3 of argv) as integer
+  set wanted to item 1 of argv
   tell application "Photos"
     if wanted is "Favorites" then
       set chosen to favorites album
@@ -39,31 +39,67 @@ on run argv
       if found is {} then error "No album called " & wanted
       set chosen to item 1 of found
     end if
-    set picked to media items of chosen
-    if (count of picked) > limit then set picked to items 1 thru limit of picked
-    export picked to (destination as alias) without using originals
-    return count of picked
+    set ids to id of every media item of chosen
+    set taken to date of every media item of chosen
+  end tell
+  set out to {}
+  repeat with i from 1 to count of ids
+    set d to item i of taken
+    if d is missing value then
+      set end of out to "0" & tab & "0" & tab & item i of ids
+    else
+      set day_ to (year of d) * 10000 + (month of d as integer) * 100 + (day of d)
+      set end of out to (day_ as text) & tab & ((time of d) as text) & tab & item i of ids
+    end if
+  end repeat
+  set AppleScript's text item delimiters to linefeed
+  return out as text
+end run
+'''
+
+# Exports each photo into its own folder (the arguments: folder, id, folder, id...), so their order stays the
+# newest first. `using originals` off: JPEG, HEIC turned into JPEG.
+EXPORT = '''
+on run argv
+  tell application "Photos"
+    repeat with i from 1 to (count of argv) by 2
+      set destination to POSIX file (item i of argv)
+      export {media item id (item (i + 1) of argv)} to (destination as alias) without using originals
+    end repeat
   end tell
 end run
 '''
 
 
-def export(album, folder):
-    out = subprocess.run(['osascript', '-e', EXPORT, folder, album, str(EXPORTED)], capture_output=True, text=True)
+def photos_app(script, args):
+    out = subprocess.run(['osascript', '-e', script] + args, capture_output=True, text=True)
     if out.returncode != 0:
         why = out.stderr.strip()
         if 'No album called' in why:
-            sys.exit('There\'s no album called "%s" in Photos. Check its name (capitals count).' % album)
+            sys.exit('There\'s no album called "%s" in Photos. Check its name (capitals count).' % args[0])
         if 'Not authorized' in why or '-1743' in why:
             sys.exit('macOS didn\'t allow controlling Photos. Allow it in System Settings > Privacy & Security > '
                      'Automation, then try again.')
         sys.exit('Photos couldn\'t export the album: ' + why)
+    return out.stdout
+
+
+def export(album, folder):
+    """The album's newest EXPORTED photos, each in its own folder (000, 001...), the newest first."""
+    listed = [line.split('\t') for line in photos_app(LIST, [album]).splitlines() if line.count('\t') == 2]
+    newest = sorted(listed, key=lambda x: (int(x[0]), int(float(x[1]))), reverse=True)[:EXPORTED]
+    args = []
+    for i, (_, _, photo) in enumerate(newest):
+        os.mkdir(os.path.join(folder, '%03d' % i))
+        args += [os.path.join(folder, '%03d' % i), photo]
+    if args:
+        photos_app(EXPORT, args)
 
 
 def fit(folder, into):
     """The album's photos (not its videos, nor repeats) fitted to the TV's 1920 x 1080, as 001.jpg on: their names."""
-    photos = [os.path.join(folder, n) for n in sorted(os.listdir(folder))
-              if re.search(r'\.(jpe?g|heic|png|tiff?)$', n, re.I)]
+    photos = [os.path.join(folder, d, n) for d in sorted(os.listdir(folder))
+              for n in sorted(os.listdir(os.path.join(folder, d))) if re.search(r'\.(jpe?g|heic|png|tiff?)$', n, re.I)]
     if not photos:
         return []
     fitter = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'photo_fit.swift')

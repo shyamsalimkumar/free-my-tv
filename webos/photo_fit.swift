@@ -1,8 +1,8 @@
 // Fits photos to the TV's 1920 × 1080 screen for the screensaver (webos/photos.py): upright, and a JPEG each.
-// Each shows whole: a larger one shrinks to fit, a smaller one keeps its size (never stretched), and the rest of the
-// screen is a calm color of its own, its average toned down. A photo that repeats an earlier one (the same photo
-// again, or a near copy: Apple's Vision rates how alike) is skipped. Up to <most> made. Prints a line a photo: the
-// name it made, or "skip", its file and the earlier one's, between tabs:
+// Each shows whole, centered on black: a larger one shrinks to fit, a smaller one keeps its size (never stretched).
+// A photo that repeats an earlier one (the same photo again, or a near copy: Apple's Vision rates how alike) is
+// skipped. Up to <most> made, in the order given. Prints a line a photo: the name it made, or "skip", its file and
+// the earlier one's, between tabs:
 //
 //     swift webos/photo_fit.swift <folder for them> <most> <photo> ...
 import CoreImage
@@ -26,18 +26,6 @@ func centered(_ image: CIImage, scale: CGFloat) -> CIImage {
     let e = scaled.extent
     return scaled.transformed(by: CGAffineTransform(translationX: (width - e.width) / 2 - e.minX,
                                                     y: (height - e.height) / 2 - e.minY))
-}
-
-/// The photo's average color, half way to gray and dark: close to the photo, but quieter than anything in it.
-func surround(_ photo: CIImage) -> CIColor {
-    var rgba = [UInt8](repeating: 0, count: 4)
-    let average = photo.applyingFilter("CIAreaAverage", parameters: [kCIInputExtentKey: CIVector(cgRect: photo.extent)])
-    context.render(average, toBitmap: &rgba, rowBytes: 4, bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
-                   format: .RGBA8, colorSpace: sRGB)
-    let r = CGFloat(rgba[0]) / 255, g = CGFloat(rgba[1]) / 255, b = CGFloat(rgba[2]) / 255
-    let gray = 0.2126 * r + 0.7152 * g + 0.0722 * b
-    func quiet(_ c: CGFloat) -> CGFloat { return (c + gray) / 2 * 0.45 }
-    return CIColor(red: quiet(r), green: quiet(g), blue: quiet(b), colorSpace: sRGB)!
 }
 
 func featurePrint(_ photo: CIImage) -> VNFeaturePrintObservation? {
@@ -71,7 +59,7 @@ for path in args.dropFirst(3) where made < most {
     }
     let e = photo.extent
     let scale = min(1, width / e.width, height / e.height)
-    let screen = centered(photo, scale: scale).composited(over: CIImage(color: surround(photo)).cropped(to: frame))
+    let screen = centered(photo, scale: scale).composited(over: CIImage(color: .black).cropped(to: frame))
     made += 1
     let name = String(format: "%03d.jpg", made)
     do {
