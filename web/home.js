@@ -315,11 +315,11 @@
 
   // MARK: - Focus
 
-  var Z = {TOP: 'top', CARDS: 'cards', SHELF: 'shelf', DRAWER: 'drawer', APPS: 'apps', SETTINGS: 'settings', EDIT: 'edit', LANG: 'lang', CITY: 'city', KEY: 'key', ABOUT: 'about'};
-  var st = {zone: Z.SHELF, top: 0, tab: 0, card: 0, shelf: 0, drawer: 0, grid: 0, row: 0, edit: 0, lang: 0, city: 0, key: 0};
+  var Z = {TOP: 'top', CARDS: 'cards', SHELF: 'shelf', DRAWER: 'drawer', APPS: 'apps', SETTINGS: 'settings', EDIT: 'edit', LANG: 'lang', CITY: 'city', KEY: 'key', ABOUT: 'about', NOTES: 'notes'};
+  var st = {zone: Z.SHELF, top: 0, tab: 0, card: 0, shelf: 0, drawer: 0, grid: 0, row: 0, edit: 0, lang: 0, city: 0, key: 0, note: 0};
   var cards = [];
 
-  function sheetOpen() { return st.zone === Z.APPS || st.zone === Z.SETTINGS || st.zone === Z.EDIT || st.zone === Z.LANG || st.zone === Z.CITY || st.zone === Z.KEY || st.zone === Z.ABOUT; }
+  function sheetOpen() { return st.zone === Z.APPS || st.zone === Z.SETTINGS || st.zone === Z.EDIT || st.zone === Z.LANG || st.zone === Z.CITY || st.zone === Z.KEY || st.zone === Z.ABOUT || st.zone === Z.NOTES; }
 
   function updateFocus() {
     var i, list;
@@ -349,6 +349,8 @@
     if (langHint) langHint.textContent = (st.lang + 1) + ' / ' + languageChoices().length + '  ·  ' + tr('OK picks, Back cancels.');
     focusRows($('citypick'), st.city, st.zone === Z.CITY);
     focusRows($('keypick'), st.key, st.zone === Z.KEY);
+    list = document.querySelectorAll('#notes .pick');
+    for (i = 0; i < list.length; i++) setClass(list[i], 'focus', st.zone === Z.NOTES && st.note === i);
     setClass(body, 'drawer-open', st.zone === Z.DRAWER);
   }
 
@@ -579,6 +581,7 @@
     }
     drawerInputs = drawerItems.length;
     drawerItems.push({label: tr('All Apps'), symbol: 'apps', run: openApps});
+    drawerItems.push({label: note && !note.seen ? tr('New note') : tr('Notes'), symbol: 'bell', run: openNotes});
     drawerItems.push({label: tr('Home Settings'), symbol: 'settings', run: openSettings});
     if (TV.canOpenSettings) drawerItems.push({label: tr('TV Settings'), symbol: 'tv_settings', run: tvSettings});
     var n = drawerItems.length, gap = 18, groupGap = 56, groups = drawerInputs > 0 && drawerInputs < n ? 2 : 1;
@@ -717,6 +720,8 @@
     setClass($('shelfedit'), 'open', false);
     setClass($('langpick'), 'open', false);
     setClass($('about'), 'open', false);
+    closeField('notes');
+    setClass($('notes'), 'open', false);
     closeField('citypick');
     closeField('keypick');
     setClass($('citypick'), 'open', false);
@@ -751,6 +756,10 @@
       {label: tr('Quotes widget'), toggle: Prefs.quotes(),
         step: function () { Prefs.set('quotes', !Prefs.quotes()); Data.settingsChanged(); }}
     ];
+    if (myPhotos.length) {
+      rows.splice(5, 0, {label: trf('My Photos ({n})', {n: myPhotos.length}), toggle: Prefs.myPhotos(),
+        step: function () { Prefs.set('myPhotos', !Prefs.myPhotos()); }});
+    }
     var names = ['Bitcoin', 'Ethereum', 'Solana', tr('Dollar')];
     var count = Data.currency === 'BRL' ? 4 : 3;
     for (var i = 0; i < count; i++) {
@@ -1156,6 +1165,178 @@
     updateFocus();
   }
 
+  // MARK: - Notes: a drawing and a message, left on the TV (drawn with the Magic Remote's pointer) or sent from a computer
+
+  var NOTE_W = 1360, NOTE_H = 560;
+  var INKS = ['#1D1D1F', '#FF3B30', '#0A84FF', '#34C759'];
+  // pen: the last point while the pointer draws; inked: the board has a drawing; changed: something to save;
+  // writer: a note was saved since the home screen last came back, so whoever wrote it is still here.
+  var note = loadNote(), board = null, ink = 0, pen = null, penOver = false, inked = false, changed = false, writer = false;
+
+  function loadNote() {
+    try { return JSON.parse(localStorage.getItem('fmtv.note')); } catch (e) { return null; }
+  }
+
+  function storeNote(n) {
+    note = n;
+    try {
+      if (n) localStorage.setItem('fmtv.note', JSON.stringify(n));
+      else localStorage.removeItem('fmtv.note');
+    } catch (e) {
+      toast(tr("Couldn't save the note."));
+    }
+    renderDrawer();   // "New note" or "Notes"
+    leaveNote();
+  }
+
+  /** The computer gets the last note written here (note.py --get); left again at every start, since /tmp doesn't last. */
+  function leaveNote() {
+    TV.leaveNote(note && note.here ? {text: note.text, at: note.at, image: note.image.replace(/^data:[^,]*,/, '')} : {});
+  }
+
+  function renderNotes() {
+    var box = $('notes').firstChild;
+    box.innerHTML = '';
+    var title = el('div', 'title', box);
+    sym('bell', title);
+    title.appendChild(document.createTextNode(tr('Notes')));
+    if (note) el('span', 'when', title, formatDate('format|EEEE, MMMM d', note.at) + ' · ' + formatDate('format|h:mm', note.at));
+    var field = textField(box, Z.NOTES, note ? note.text : '', tr('Write a message'), tr('Message'));
+    setClass(field.parentNode, 'pick', true);
+    field.oninput = function () { changed = true; };
+    board = el('canvas', 'board', box);
+    board.width = NOTE_W;
+    board.height = NOTE_H;
+    blank();
+    inked = !!(note && note.image);
+    if (inked) {
+      var img = new Image();
+      img.onload = function () { if (board) board.getContext('2d').drawImage(img, 0, 0, NOTE_W, NOTE_H); };
+      img.src = note.image;
+    }
+    board.onmousedown = function (e) { pen = point(e); stroke(pen, pen); e.preventDefault(); };
+    board.onmousemove = function (e) { if (pen) { var p = point(e); stroke(pen, p); pen = p; } };
+    board.onmouseover = function () { penOver = true; };
+    board.onmouseout = function () { penOver = false; pen = null; };
+    var bar = el('div', 'bar', box);
+    for (var i = 0; i < INKS.length; i++) {
+      var dot = el('div', 'pick ink' + (i === ink ? ' on' : ''), bar);
+      dot.style.backgroundColor = INKS[i];
+      hover(dot, Z.NOTES, 1 + i);
+    }
+    hover(el('div', 'pick btn clear', bar, tr('Clear')), Z.NOTES, INKS.length + 1);
+    hover(el('div', 'pick btn save', bar, tr('Save')), Z.NOTES, INKS.length + 2);
+    el('div', 'hint', box, tr('Draw with the pointer while you hold OK. Back closes without saving.'));
+  }
+
+  function blank() {
+    var c = board.getContext('2d');
+    c.fillStyle = '#FFF';
+    c.fillRect(0, 0, NOTE_W, NOTE_H);
+  }
+
+  /** Where the pointer is on the board, in the board's own pixels (the stage is scaled to the window). */
+  function point(e) {
+    var r = board.getBoundingClientRect();
+    return {x: (e.clientX - r.left) * NOTE_W / r.width, y: (e.clientY - r.top) * NOTE_H / r.height};
+  }
+
+  function stroke(a, b) {
+    var c = board.getContext('2d');
+    c.strokeStyle = INKS[ink];
+    c.lineWidth = 9;
+    c.lineCap = 'round';
+    c.lineJoin = 'round';
+    c.beginPath();
+    c.moveTo(a.x, a.y);
+    c.lineTo(b.x + (a === b ? 0.1 : 0), b.y);   // a dot: a line of no length draws nothing
+    c.stroke();
+    inked = changed = true;
+  }
+
+  function openNotes() {
+    hideSaver();
+    closeSheets();
+    st.zone = Z.NOTES;
+    st.note = 1 + ink;
+    changed = false;
+    if (note && !note.seen) { note.seen = true; storeNote(note); }
+    renderNotes();
+    setClass($('notes'), 'open', true);
+    updateFocus();
+  }
+
+  function activateNotes() {
+    if (st.note === 0) openField('notes');
+    else if (st.note <= INKS.length) {
+      ink = st.note - 1;
+      var dots = document.querySelectorAll('#notes .ink');
+      for (var i = 0; i < dots.length; i++) setClass(dots[i], 'on', i === ink);
+    } else if (st.note === INKS.length + 1) {
+      blank();
+      fieldOf('notes').value = '';
+      inked = false;
+      changed = true;
+    } else saveNote();
+  }
+
+  /** Save: the board and the message become the note, new for whoever comes to the TV next (nothing changed: it closes). */
+  function saveNote() {
+    var text = fieldOf('notes').value.replace(/^\s+|\s+$/g, '');
+    closeField('notes');
+    if (changed) {
+      storeNote(inked || text ? {image: inked ? board.toDataURL('image/png') : '', text: text, at: Date.now(), seen: false, here: true} : null);
+      writer = !!note;
+      if (note) toast(tr('Saved. It opens by itself when the home screen comes back.'));
+    }
+    closeSheets();
+  }
+
+  /**
+   * A note sent from a computer shows at once; one left on the TV, when the home screen comes back (the TV turned on,
+   * or back from an app), not to whoever wrote it while they're still on it,
+   * unless the computer read it already (note.py --get).
+   */
+  function checkNote() {
+    TV.sentNote(function (sent) {
+      if (sent && sent.seen && note && !note.seen && String(note.at) === sent.seen) { note.seen = true; storeNote(note); }
+      if (sent && (sent.image || sent.text)) receiveNote(sent);
+      else showWaitingNote();
+    });
+  }
+
+  function showWaitingNote() {
+    if (!note || note.seen || sheetOpen() || saverOn || document.hidden) return;
+    if (note.here && writer) return;
+    openNotes();
+  }
+
+  function receiveNote(sent) {
+    var text = (sent.text || '').slice(0, 300);
+    function keep(image) {
+      storeNote({image: image, text: text, at: Date.now(), seen: false});
+      if (st.zone === Z.NOTES && changed) toast(tr('A new note came in. It opens when you close this one.'));
+      else openNotes();
+    }
+    if (!sent.image) { keep(''); return; }
+    var img = new Image();
+    // The picture, whole and centered on the white board, kept at the board's size (localStorage holds a few MB).
+    img.onload = function () {
+      var c = document.createElement('canvas'), x = c.getContext('2d');
+      c.width = NOTE_W;
+      c.height = NOTE_H;
+      x.fillStyle = '#FFF';
+      x.fillRect(0, 0, NOTE_W, NOTE_H);
+      var s = Math.min(NOTE_W / img.width, NOTE_H / img.height), w = img.width * s, h = img.height * s;
+      x.drawImage(img, (NOTE_W - w) / 2, (NOTE_H - h) / 2, w, h);
+      keep(c.toDataURL('image/png'));
+    };
+    img.onerror = function () { keep(''); };
+    img.src = 'data:image/png;base64,' + sent.image;   // Chromium goes by the bytes: a JPEG or WebP shows too
+  }
+
+  document.addEventListener('mouseup', function () { pen = null; });
+
   // MARK: - Shelf editor: which apps, in what order
 
   function editList() {
@@ -1275,6 +1456,9 @@
       case Z.ABOUT:
         closeAbout();
         return;
+      case Z.NOTES:
+        activateNotes();
+        return;
     }
   }
 
@@ -1337,6 +1521,11 @@
       case Z.KEY:
         if (dy) st.key = Math.max(0, Math.min(keyRows() - 1, st.key + dy));
         break;
+      case Z.NOTES:
+        if (dy < 0) st.note = 0;
+        else if (dy > 0 && st.note === 0) st.note = 1 + ink;
+        else if (dx && st.note > 0) st.note = Math.max(1, Math.min(INKS.length + 2, st.note + dx));
+        break;
     }
     updateFocus();
   }
@@ -1362,7 +1551,7 @@
   /** The pointer focuses what it's over (the Magic Remote, or a mouse when previewing). */
   function hover(node, zone, index) {
     node.onmouseover = function () {
-      if (saverOn || (sheetOpen() !== (zone === Z.APPS || zone === Z.SETTINGS || zone === Z.EDIT || zone === Z.LANG || zone === Z.CITY || zone === Z.KEY || zone === Z.ABOUT))) return;
+      if (saverOn || (sheetOpen() !== (zone === Z.APPS || zone === Z.SETTINGS || zone === Z.EDIT || zone === Z.LANG || zone === Z.CITY || zone === Z.KEY || zone === Z.ABOUT || zone === Z.NOTES))) return;
       if (zone === Z.DRAWER && st.zone !== Z.DRAWER) return;
       if (zone !== Z.DRAWER && st.zone === Z.DRAWER && zone !== Z.SHELF) return;
       if (zone === Z.TOP && index < 3 && !Data.hasKey()) return;   // the tabs are hidden without the picks
@@ -1378,6 +1567,7 @@
       else if (zone === Z.LANG) st.lang = index;
       else if (zone === Z.CITY) st.city = index;
       else if (zone === Z.KEY) st.key = index;
+      else if (zone === Z.NOTES) st.note = index;
       updateFocus();
     };
     node.onclick = function () { node.onmouseover(); activate(); };
@@ -1392,6 +1582,80 @@
     setClass(t, 'on', true);
     clearTimeout(toastTimer);
     toastTimer = setTimeout(function () { setClass(t, 'on', false); }, 6000);
+  }
+
+  // MARK: - My Photos: an album sent from a computer (webos/photos.py), shown by the screensaver instead of the picks.
+  // Kept in IndexedDB (localStorage holds only a few MB), their names in order in localStorage.
+
+  var myPhotos = storedPhotoNames(), photoDb = null, gettingPhotos = false;
+
+  function storedPhotoNames() {
+    try { return JSON.parse(localStorage.getItem('fmtv.photos')) || []; } catch (e) { return []; }
+  }
+
+  function setPhotoNames(names) {
+    myPhotos = names;
+    try { localStorage.setItem('fmtv.photos', JSON.stringify(names)); } catch (e) {}
+    if (st.zone === Z.SETTINGS) renderSettings();
+  }
+
+  /** done(the photos' object store) or done(null) where there's no IndexedDB. */
+  function photoStore(mode, done) {
+    function store() {
+      try { done(photoDb.transaction('photos', mode).objectStore('photos')); } catch (e) { done(null); }
+    }
+    if (photoDb) { store(); return; }
+    try {
+      var open = indexedDB.open('fmtv', 1);
+      open.onupgradeneeded = function () { open.result.createObjectStore('photos'); };
+      open.onsuccess = function () { photoDb = open.result; store(); };
+      open.onerror = function () { done(null); };
+    } catch (e) {
+      done(null);
+    }
+  }
+
+  /** done(a data: URL) or done(null). */
+  function loadPhoto(name, done) {
+    photoStore('readonly', function (store) {
+      if (!store) { done(null); return; }
+      var get = store.get(name);
+      get.onsuccess = function () { done(get.result || null); };
+      get.onerror = function () { done(null); };
+    });
+  }
+
+  /** A set sent from the computer replaces the one kept (an empty one removes them). */
+  function checkPhotos() {
+    if (gettingPhotos) return;
+    TV.sentPhotos(function (names) {
+      if (!names) return;
+      gettingPhotos = true;
+      setPhotoNames([]);
+      photoStore('readwrite', function (store) {
+        if (store) store.clear();
+        var got = [];
+        (function next(i) {
+          if (i >= names.length) {
+            gettingPhotos = false;
+            setPhotoNames(got);
+            toast(names.length ? plural('plural|one:{n} photo for the screensaver|other:{n} photos for the screensaver', got.length)
+              : tr('Your photos are off the screensaver.'));
+            return;
+          }
+          toast(trf('Getting your photos: {n} of {total}', {n: i + 1, total: names.length}));
+          TV.sentPhoto(names[i], function (data) {
+            if (!data) { next(i + 1); return; }
+            photoStore('readwrite', function (st2) {
+              if (!st2) { next(i + 1); return; }
+              var put = st2.put('data:image/jpeg;base64,' + data, names[i]);
+              put.onsuccess = function () { got.push(names[i]); next(i + 1); };
+              put.onerror = function () { next(i + 1); };   // the TV's storage is full: the ones that fit stay
+            });
+          });
+        })(0);
+      });
+    });
   }
 
   // MARK: - Night, clock, screensaver
@@ -1409,8 +1673,9 @@
 
   var saverOn = false, idleAt = Date.now(), saverIndex = 0, saverTimer = 0, saverPick = null, SAVER_AFTER = 5 * 60000;
 
-  /** The screensaver's photos: picks with an app on the TV. */
+  /** The screensaver's photos: My Photos ({mine: name}) when there are some and they're on, else picks with an app on the TV. */
   function saverPhotos() {
+    if (Prefs.myPhotos() && myPhotos.length) return myPhotos.map(function (name) { return {mine: name}; });
     return Data.showcase().filter(function (p) { return p.backdrop && Data.usable(p.app); });
   }
 
@@ -1431,24 +1696,27 @@
     function next() {
       if (!saverOn) return;
       var p = photos.length ? photos[saverIndex++ % photos.length] : null;
-      var back = front === a ? b : a;
-      if (p) {
-        back.style.backgroundImage = 'url(' + Data.image(p.backdrop, 'original') + ')';
-        back.style.webkitTransform = back.style.transform = 'scale(1.0)';
-        clock.children[2].textContent = p.title;
-        saverPick = p;
-        // With Watch from the screensaver on, OK opens this title's app (any other key only closes).
-        var app = Prefs.saverWatch() && Data.appFor(p.app);
-        hint.textContent = app ? trf('Press OK to watch on {app} · any other button to close', {app: app.title}) : '';
-        setTimeout(function () {
-          setClass(back, 'on', true);
-          setClass(front, 'on', false);
-          back.style.webkitTransform = back.style.transform = 'scale(1.08) translateX(-1.5%)';
-          front = back;
-        }, 60);
-      }
+      if (p && p.mine) loadPhoto(p.mine, function (url) { if (url && saverOn) show(url, null); });
+      else if (p) show(Data.image(p.backdrop, 'original'), p);
       tickSaverClock(clock);
       saverTimer = setTimeout(next, 12000);
+    }
+    /** pick: the title the photo is from, or null for one of My Photos. */
+    function show(url, pick) {
+      var back = front === a ? b : a;
+      back.style.backgroundImage = 'url(' + url + ')';
+      back.style.webkitTransform = back.style.transform = 'scale(1.0)';
+      clock.children[2].textContent = pick ? pick.title : '';
+      saverPick = pick;
+      // With Watch from the screensaver on, OK opens this title's app (any other key only closes).
+      var app = pick && Prefs.saverWatch() && Data.appFor(pick.app);
+      hint.textContent = app ? trf('Press OK to watch on {app} · any other button to close', {app: app.title}) : '';
+      setTimeout(function () {
+        setClass(back, 'on', true);
+        setClass(front, 'on', false);
+        back.style.webkitTransform = back.style.transform = 'scale(1.08) translateX(-1.5%)';
+        front = back;
+      }, 60);
     }
     setClass(s, 'on', true);
     next();
@@ -1481,6 +1749,7 @@
     var k = e.keyCode;
     if (poke(k === TV.keys.ok)) { e.preventDefault(); return; }   // the first press only wakes the screen (or OK watches)
     if (typing(k)) return;
+    if (k === TV.keys.ok && penOver) { e.preventDefault(); return; }
     if (k === TV.keys.left) move(-1, 0);
     else if (k === TV.keys.right) move(1, 0);
     else if (k === TV.keys.up) move(0, -1);
@@ -1497,9 +1766,13 @@
    * its Cancel or ↑ ↓ leave the field. Samsung's keyboard sends Done as 65376 and Cancel as 65385. True: handled here.
    */
   function typing(k) {
-    var sheet = st.zone === Z.CITY ? 'citypick' : st.zone === Z.KEY ? 'keypick' : '';
+    var sheet = st.zone === Z.CITY ? 'citypick' : st.zone === Z.KEY ? 'keypick' : st.zone === Z.NOTES ? 'notes' : '';
     if (!sheet || !typingIn(sheet)) return false;
-    if (k === TV.keys.ok || k === 65376) { if (st.zone === Z.CITY) searchCity(); else saveKey(); }
+    if (k === TV.keys.ok || k === 65376) {
+      if (st.zone === Z.CITY) searchCity();
+      else if (st.zone === Z.KEY) saveKey();
+      else { closeField(sheet); st.note = INKS.length + 2; updateFocus(); }   // on to Save
+    }
     else if (k === TV.keys.back || k === 27 || k === 65385) { closeField(sheet); updateFocus(); }
     else if (k === TV.keys.up || k === TV.keys.down) { closeField(sheet); move(0, k === TV.keys.up ? -1 : 1); }
     return true;   // anything else types into the field
@@ -1567,19 +1840,20 @@
   }
 
   function reopened() {
+    writer = false;
     // LG: with handlesRelaunch the app has to come to the front itself, or opening it again while it runs shows nothing.
     if (window.PalmSystem && window.PalmSystem.activate) window.PalmSystem.activate();
     reset();
-    loadApps(function () { renderShelf(); renderDrawer(); restInDrawer(); Data.refresh(); });
+    loadApps(function () { renderShelf(); renderDrawer(); restInDrawer(); Data.refresh(); checkNote(); checkPhotos(); });
   }
 
   window.addEventListener('resize', fit);
   document.addEventListener('webOSRelaunch', reopened);   // LG: opened again while running
   window.addEventListener('appcontrol', reopened);        // Samsung: the same
   document.addEventListener('visibilitychange', function () {
-    if (document.hidden) { hideSaver(); return; }
+    if (document.hidden) { hideSaver(); writer = false; return; }
     idleAt = Date.now();
-    loadApps(function () { renderShelf(); renderDrawer(); updateFocus(); Data.refresh(); });
+    loadApps(function () { renderShelf(); renderDrawer(); updateFocus(); Data.refresh(); checkNote(); checkPhotos(); });
   });
 
   I18N.set(Prefs.language());
@@ -1593,10 +1867,14 @@
     renderAll();
     restInDrawer();
     Data.refresh();
+    checkNote();
+    checkPhotos();
+    leaveNote();
   });
   setInterval(function () {
     checkNight();
     Data.refresh();
+    checkNote();
     if (!saverOn && !sheetOpen() && Date.now() - idleAt > SAVER_AFTER) showSaver();
     if (saverOn) tickSaverClock($('saver').querySelector('.clock'));
   }, 30000);

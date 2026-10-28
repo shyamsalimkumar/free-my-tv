@@ -497,7 +497,7 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .cell.focus .face { -webkit-transform: scale(1.08); transform: scale(1.08); box-shadow: 0 16px 34px rgba(0, 0, 0, 0.55), inset 0 0 0 2px rgba(255, 255, 255, 0.4); }
 .cell.focus .label { color: #FFF; }
 
-#settings .box, #shelfedit .box, #langpick .box, #citypick .box, #keypick .box, #about .box {
+#settings .box, #shelfedit .box, #langpick .box, #citypick .box, #keypick .box, #about .box, #notes .box {
   position: absolute;
   left: 560px;
   top: 150px;
@@ -520,7 +520,7 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .box .row .value .sym { width: 26px; height: 26px; vertical-align: -3px; }
 .box .row.dim { color: rgba(255, 255, 255, 0.4); }
 #about .row .value { font-feature-settings: 'tnum'; }
-#citypick .row.field input, #keypick .row.field input {
+#citypick .row.field input, #keypick .row.field input, #notes .row.field input {
   width: 100%;
   height: 70px;
   margin: 0;
@@ -532,9 +532,9 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
   font: inherit;
   line-height: 70px;
 }
-#citypick .row.field, #keypick .row.field { box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.18); }
-#citypick .row.field input::-webkit-input-placeholder, #keypick .row.field input::-webkit-input-placeholder { color: rgba(255, 255, 255, 0.4); }
-#citypick .row.field input::placeholder, #keypick .row.field input::placeholder { color: rgba(255, 255, 255, 0.4); }
+#citypick .row.field, #keypick .row.field, #notes .row.field { box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.18); }
+#citypick .row.field input::-webkit-input-placeholder, #keypick .row.field input::-webkit-input-placeholder, #notes .row.field input::-webkit-input-placeholder { color: rgba(255, 255, 255, 0.4); }
+#citypick .row.field input::placeholder, #keypick .row.field input::placeholder, #notes .row.field input::placeholder { color: rgba(255, 255, 255, 0.4); }
 #citypick .row { overflow: hidden; text-overflow: ellipsis; }
 #about .row .value.cut { overflow: hidden; text-overflow: ellipsis; }
 .box .hint { padding: 14px 18px 0; font-size: 22px; font-weight: 500; color: rgba(255, 255, 255, 0.5); }
@@ -544,6 +544,30 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .toggle::after { content: ''; position: absolute; left: 4px; top: 4px; width: 36px; height: 36px; border-radius: 18px; background: #FFF; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35); -webkit-transition: -webkit-transform 0.14s; transition: transform 0.14s; }
 .toggle.on { background: #3FD69B; }
 .toggle.on::after { -webkit-transform: translateX(34px); transform: translateX(34px); }
+
+/* MARK: - Notes: a white board drawn on with the pointer, a message, the inks, Clear and Save */
+
+#notes .box { left: 240px; top: 60px; width: 1440px; padding: 30px 40px 26px; }
+#notes .title .when { float: right; margin-top: 10px; font-size: 24px; font-weight: 500; color: rgba(255, 255, 255, 0.5); }
+#notes .row.focus { background: rgba(255, 255, 255, 0.13); }
+#notes .board { display: block; width: 1360px; height: 560px; border-radius: 24px; background: #FFF; cursor: crosshair; }
+#notes .bar { position: relative; height: 76px; margin-top: 22px; }
+#notes .ink {
+  display: inline-block;
+  width: 56px;
+  height: 56px;
+  margin: 10px 22px 0 4px;
+  border-radius: 28px;
+  box-shadow: inset 0 0 0 3px rgba(255, 255, 255, 0.25);
+  -webkit-transition: -webkit-transform 0.15s;
+  transition: transform 0.15s;
+}
+#notes .ink.on { box-shadow: 0 0 0 4px #FFF; }
+#notes .ink.focus { -webkit-transform: scale(1.2); transform: scale(1.2); }
+#notes .btn { position: absolute; top: 3px; height: 70px; padding: 0 44px; border-radius: 35px; font-size: 30px; font-weight: 600; line-height: 70px; background: rgba(255, 255, 255, 0.1); }
+#notes .btn.clear { right: 200px; }
+#notes .btn.save { right: 0; }
+#notes .btn.focus { background: #FFF; color: #111; }
 
 /* MARK: - Screensaver: the picks' photos, slowly moving, and a clock */
 

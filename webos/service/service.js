@@ -1,16 +1,18 @@
 /*
- * Free My TV's service on LG webOS: one call to the TV's remote control API (127.0.0.1:3000) for the web app.
+ * Free My TV's service on LG webOS: one call to the TV's remote control API (127.0.0.1:3000) for the web app, and
+ * the notes a computer sends (webos/note.py).
  * Newer webOS gives each app's page its own origin (file://io.freemytv-webos), and the API closes any connection
  * that isn't from file:// ("invalid origin"); from here the handshake says file://.
  * Plain ES5 with Node's net only: older webOS ships an old Node.
  */
+var fs = require('fs');
 var net = require('net');
 var Service = require('webos-service');
 
 var service = new Service(require('./package.json').name);
 
-function buffer(x) {   // Buffer.from is missing before Node 4.5
-  return Buffer.from ? Buffer.from(x) : new Buffer(x);
+function buffer(x, encoding) {   // Buffer.from is missing before Node 4.5
+  return Buffer.from ? Buffer.from(x, encoding) : new Buffer(x, encoding);
 }
 
 /** A client's text frame: masked, as the protocol asks. */
@@ -90,6 +92,73 @@ function call(uri, clientKey, done) {
   socket.on('error', function () { finish(null); });
   socket.on('close', function () { finish(null); });
 }
+
+// A note sent from a computer (webos/note.py) waits in /tmp: the page can't read files, and this jailed service sees
+// no other folder that the computer's SSH login can write to. In a folder of its own that anyone may write to, since
+// /tmp lets only a file's owner delete it, and a note left there would come back every time.
+var NOTE_DIR = '/tmp/freemytv-note/';
+
+/** The file's content, once: it's deleted as it's read. */
+function take(path, encoding) {
+  var data = '';
+  try {
+    if (fs.statSync(path).size <= 8 * 1024 * 1024) data = fs.readFileSync(path, encoding);
+  } catch (e) {
+    return '';
+  }
+  try { fs.unlinkSync(path); } catch (e) { return ''; }
+  return data;
+}
+
+service.register('note', function (message) {
+  // seen: the time of the TV's note that note.py --get read, which then needn't open by itself on the TV.
+  var image = take(NOTE_DIR + 'image', 'base64'), text = take(NOTE_DIR + 'text', 'utf8');
+  message.respond({returnValue: true, image: image, text: text, seen: take(NOTE_DIR + 'seen', 'utf8')});
+});
+
+/** The note last saved on the TV, for the computer (note.py --get): {text, at, image: base64 PNG}, or {} for none. */
+service.register('reply', function (message) {
+  var p = message.payload || {}, image = typeof p.image === 'string' ? p.image : '';
+  try {
+    try { fs.mkdirSync(NOTE_DIR); fs.chmodSync(NOTE_DIR, 511); } catch (e) {}   // 0777: note.py writes there too
+    try { fs.unlinkSync(NOTE_DIR + 'reply.png'); } catch (e) {}
+    if (typeof p.at !== 'number') {
+      try { fs.unlinkSync(NOTE_DIR + 'reply.json'); } catch (e) {}
+    } else {
+      if (image) fs.writeFileSync(NOTE_DIR + 'reply.png', buffer(image, 'base64'));
+      fs.writeFileSync(NOTE_DIR + 'reply.json', JSON.stringify({text: String(p.text || ''), at: p.at, image: !!image}));
+    }
+    message.respond({returnValue: true});
+  } catch (e) {
+    message.respond({returnValue: false, errorText: String(e)});
+  }
+});
+
+// Photos for the screensaver, sent from a computer (webos/photos.py) the same way: the JPEGs and set.txt, their names
+// (empty: none). The page copies them into its own storage, a piece at a time: one Luna reply holds only so much
+// (a multiple of 3 bytes, so the pieces' base64 joins into the whole's).
+var PHOTO_DIR = '/tmp/freemytv-photos/', PHOTO_NAME = /^[\w.-]+\.jpg$/, PIECE = 192 * 1024;
+
+/** The set just sent ({names: [...]}, once), or {} when nothing came. */
+service.register('photos', function (message) {
+  if (!fs.existsSync(PHOTO_DIR + 'set.txt')) { message.respond({returnValue: true}); return; }
+  var names = take(PHOTO_DIR + 'set.txt', 'utf8');
+  message.respond({returnValue: true, names: names.split('\n').filter(function (n) { return PHOTO_NAME.test(n); })});
+});
+
+/** {name, part}: that piece of the photo, base64, and whether more follow; the file goes after its last piece. */
+service.register('photo', function (message) {
+  var p = message.payload || {}, name = String(p.name || ''), part = p.part | 0;
+  if (!PHOTO_NAME.test(name)) { message.respond({returnValue: false, errorText: 'Bad name'}); return; }
+  try {
+    var data = fs.readFileSync(PHOTO_DIR + name), more = (part + 1) * PIECE < data.length;
+    if (!more) fs.unlinkSync(PHOTO_DIR + name);
+    var piece = data.slice(part * PIECE, (part + 1) * PIECE).toString('base64');
+    message.respond({returnValue: true, data: piece, more: more});
+  } catch (e) {
+    message.respond({returnValue: false, errorText: String(e)});
+  }
+});
 
 service.register('ssap', function (message) {
   var p = message.payload || {};

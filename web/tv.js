@@ -525,6 +525,39 @@ var TV = (function () {
     /** The TV's model, firmware, system, IP address and this app's version, for About this TV. */
     about: about,
 
+    /**
+     * LG: a note sent from a computer (webos/note.py), handed over once: done({image: base64 or '', text, seen}) or null.
+     * seen: the time of the TV's note the computer read (note.py --get).
+     */
+    sentNote: function (done) {
+      if (!webos) { done(null); return; }
+      luna('luna://' + self + '.service/note', {}, function (res) { done(res && (res.image || res.text || res.seen) ? res : null); });
+    },
+
+    /** LG: the note last saved on the TV, for the computer to get (note.py --get): {text, at, image: base64}, or {}. */
+    leaveNote: function (note) {
+      if (webos) luna('luna://' + self + '.service/reply', note, null);
+    },
+
+    /** LG: the photos a computer just sent (webos/photos.py): done(names, [] to remove them all) or done(null). */
+    sentPhotos: function (done) {
+      if (!webos) { done(null); return; }
+      luna('luna://' + self + '.service/photos', {}, function (res) { done(res && res.names ? res.names : null); });
+    },
+
+    /** LG: one of them, as base64, gathered piece by piece (one Luna reply holds only so much); null on failure. */
+    sentPhoto: function (name, done) {
+      var pieces = [];
+      (function next(part) {
+        luna('luna://' + self + '.service/photo', {name: name, part: part}, function (res) {
+          if (!res) { done(null); return; }
+          pieces.push(res.data);
+          if (res.more) next(part + 1);
+          else done(pieces.join(''));
+        });
+      })(0);
+    },
+
     /** LG: keeps the TV's screensaver away while ours will take over (`hold` says when). */
     holdScreenSaver: holdScreenSaver,
 
