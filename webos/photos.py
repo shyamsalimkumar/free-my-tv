@@ -6,8 +6,8 @@
     python3 webos/photos.py <TV IP> --clear
 
 Each time, the album sent replaces the one on the TV; --clear takes them off (the picks come back). Up to 60 photos
-(the album's first; videos are left out), fitted to the TV's screen (webos/photo_fit.swift). Home Settings >
-My Photos turns them off and on.
+(the album's first; videos, repeats and near copies are left out, and listed), fitted to the TV's screen
+(webos/photo_fit.swift). Home Settings > My Photos turns them off and on.
 macOS only (it asks the Photos app); the first time, macOS asks to allow controlling Photos. Install Free My TV first
 (webos/install.py): this uses its key.
 """
@@ -23,6 +23,7 @@ from install import APP_ID, fetch_key, luna, ssh   # noqa: E402
 
 DIR = '/tmp/freemytv-photos/'   # where the app's service takes them from (webos/service)
 MOST = 60
+EXPORTED = 100   # more than MOST, so the repeats left out leave room for others
 
 # Exports the album's first photos (`using originals` off: JPEG, HEIC turned into JPEG) into a folder.
 EXPORT = '''
@@ -48,7 +49,7 @@ end run
 
 
 def export(album, folder):
-    out = subprocess.run(['osascript', '-e', EXPORT, folder, album, str(MOST)], capture_output=True, text=True)
+    out = subprocess.run(['osascript', '-e', EXPORT, folder, album, str(EXPORTED)], capture_output=True, text=True)
     if out.returncode != 0:
         why = out.stderr.strip()
         if 'No album called' in why:
@@ -60,14 +61,24 @@ def export(album, folder):
 
 
 def fit(folder, into):
-    """The album's photos (not its videos) fitted to the TV's 1920 x 1080, named 001.jpg on: their names."""
+    """The album's photos (not its videos, nor repeats) fitted to the TV's 1920 x 1080, as 001.jpg on: their names."""
     photos = [os.path.join(folder, n) for n in sorted(os.listdir(folder))
               if re.search(r'\.(jpe?g|heic|png|tiff?)$', n, re.I)]
     if not photos:
         return []
     fitter = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'photo_fit.swift')
-    made = subprocess.run(['swift', fitter, into] + photos, capture_output=True, text=True)
-    return made.stdout.split()
+    made = subprocess.run(['swift', fitter, into, str(MOST)] + photos, capture_output=True, text=True)
+    names, skipped = [], []
+    for line in made.stdout.splitlines():
+        if line.startswith('skip\t'):
+            skipped.append(line.split('\t')[1:])
+        elif line:
+            names.append(line)
+    if skipped:
+        print('Left out %d %s:' % (len(skipped), 'repeat' if len(skipped) == 1 else 'repeats'))
+        for photo, like in skipped:
+            print('  %s (like %s)' % (photo, like))
+    return names
 
 
 def send(ip, into, names):
